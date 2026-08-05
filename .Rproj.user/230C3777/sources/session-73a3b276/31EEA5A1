@@ -3,7 +3,7 @@
     "path": "C:/Users/kevin/OneDrive - Vrije Universiteit Amsterdam/VU/UdeSA/Github/bachelor-thesis/Thesis_Code_GitHub_Annotated.Rmd",
     "project_path": "Thesis_Code_GitHub_Annotated.Rmd",
     "type": "r_markdown",
-    "hash": "0",
+    "hash": "3872762548",
     "contents": "",
     "dirty": true,
     "created": 1785961301119.0,
@@ -12,16 +12,16 @@
     "properties": {
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "44,24",
-        "scrollLine": "33",
-        "last_setup_crc32": "73a3b276bc7d3998"
+        "cursorPosition": "362,1",
+        "scrollLine": "343",
+        "last_setup_crc32": "73a3b276a44cbc4f"
     },
     "folds": "",
     "lastKnownWriteTime": 1785961517,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1785962466674,
+    "last_content_update": 1785964602961,
     "read_only": false,
     "read_only_alternatives": []
 }

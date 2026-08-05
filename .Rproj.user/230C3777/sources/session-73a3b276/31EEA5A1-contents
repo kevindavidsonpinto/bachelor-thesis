@@ -11,39 +11,31 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
-# GITHUB ANNOTATION: `rm(list = ls())` clears a user's entire workspace.
-# For replication, consider running the project in a fresh R session instead.
-rm(list = ls())   
-# GITHUB ANNOTATION: `graphics.off()` closes every open graphics device.
-# It is not required for reproducibility and can be removed unless a stale device caused problems locally.
-graphics.off()
-# GITHUB ANNOTATION: This clears the RStudio console only and has no analytical purpose.
-cat("\014") 
-
-dir.create("outputs", showWarnings = FALSE) 
-
+# Load packages
+library(here)
+library(tidyverse)
+library(lubridate)
+library(zoo)
 library(ggplot2)
+library(ggtext)
 library(sandwich)
 library(lmtest)
 library(modelsummary)
-library(lubridate)
-library(tidyverse)
-library(zoo)
 library(flextable)
 library(officer)
 library(webshot2)
 library(car)
 
-#options(modelsummary_factory = "kableExtra")
-#options(modelsummary_format_numeric_latex = "plain")
-#tinytex::reinstall_tinytex()
+# Repository-relative folders
+data_dir   <- here("data", "clean")
+figure_dir <- here("outputs", "figures")
+table_dir  <- here("outputs", "tables")
 
-# Use the repository root as the project base.
-# Open the project through bachelor-thesis.Rproj before running this script.
+# Create output folders if they do not yet exist
+dir.create(figure_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(table_dir, recursive = TRUE, showWarnings = FALSE)
 
-library(here)
-data_dir <- here("data")
-
+# Import source datasets
 ecb <- read_csv(
   file.path(data_dir, "ECB_Data_Portal_20260421221734_clean.csv")
 )
@@ -67,7 +59,6 @@ hh_deposit <- read.csv(
 dfr <- read.csv(
   file.path(data_dir, "ECB DFR_01011999_17062026_clean.csv")
 )
-
 ```
 
 # 2. Clean all source series needed to reproduce the exact estimation sample
@@ -101,6 +92,7 @@ nfc_clean <- nfc %>%
     LoanRate = as.numeric(LoanRate)
   )
 ```
+
 
 ```{r}
 # This section extends ECB data to match the NFC sample period, creates a continuous daily timeline, carries policy rates forward between ECB announcements, and then aggregates these observations into monthly averages.
@@ -292,9 +284,10 @@ thesis_data <- nfc_clean %>%
 ```
 
 # 4. Figure 0
+# GITHUB CLEANUP [PATH ONLY]:
+# Save the figure to the repository's outputs/figures directory using
+# the repository-relative `figure_dir` defined in the setup chunk.
 
-# GITHUB CLEANUP [PATH ONLY]: Keep this figure code unchanged, but save to a repository-relative `outputs/figures/` path.
-# Add generated figures to `.gitignore` unless you deliberately want to version the final thesis image.
 ```{r}
 # Create a line graph comparing NFC lending rate, ECB policy rate, DFR, and inflation
 fig0 <- thesis_data %>%
@@ -356,12 +349,12 @@ fig0 <- thesis_data %>%
 
 fig0
 
-if (!dir.exists("figures")) {
-  dir.create("figures")
-}
-
+# Save Figure 0 to the repository's outputs/figures folder
 ggsave(
-  filename = "figures/figure0.1_ecb_nfc_dfr_inflation.png",
+  filename = file.path(
+    figure_dir,
+    "figure0_ecb_nfc_dfr_inflation.png"
+  ),
   plot = fig0,
   width = 8,
   height = 5,
