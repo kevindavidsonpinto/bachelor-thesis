@@ -42,7 +42,7 @@ library(car)
 # Open the project through bachelor-thesis.Rproj before running this script.
 
 library(here)
-data_dir <- here("data", "raw")
+data_dir <- here("data")
 
 ecb <- read_csv(
   file.path(data_dir, "ECB_Data_Portal_20260421221734_clean.csv")
