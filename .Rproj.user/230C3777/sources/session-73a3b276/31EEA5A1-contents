@@ -1,0 +1,1551 @@
+---
+title: "ECB Interest-Rate Pass-Through: Exact Final-Thesis Reproduction Code"
+author: "Kevin Pinto"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# 1. Setup and source data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# GITHUB ANNOTATION: `rm(list = ls())` clears a user's entire workspace.
+# For replication, consider running the project in a fresh R session instead.
+rm(list = ls())   
+# GITHUB ANNOTATION: `graphics.off()` closes every open graphics device.
+# It is not required for reproducibility and can be removed unless a stale device caused problems locally.
+graphics.off()
+# GITHUB ANNOTATION: This clears the RStudio console only and has no analytical purpose.
+cat("\014") 
+
+dir.create("outputs", showWarnings = FALSE) 
+
+library(ggplot2)
+library(sandwich)
+library(lmtest)
+library(modelsummary)
+library(lubridate)
+library(tidyverse)
+library(zoo)
+library(flextable)
+library(officer)
+library(webshot2)
+library(car)
+
+#options(modelsummary_factory = "kableExtra")
+#options(modelsummary_format_numeric_latex = "plain")
+#tinytex::reinstall_tinytex()
+
+# Use the repository root as the project base.
+# Open the project through bachelor-thesis.Rproj before running this script.
+
+library(here)
+data_dir <- here("data", "raw")
+
+ecb <- read_csv(
+  file.path(data_dir, "ECB_Data_Portal_20260421221734_clean.csv")
+)
+
+nfc <- read_csv(
+  file.path(data_dir, "NFC_31012003_31032026_clean.csv")
+)
+
+euribor <- read.csv(
+  file.path(data_dir, "EURIBOR 31011994_30042026_clean.csv")
+)
+
+hcip <- read.csv(
+  file.path(data_dir, "prc_hicp_clean.csv")
+)
+
+hh_deposit <- read.csv(
+  file.path(data_dir, "HH_Dep_Rate_01012003_31032026_clean.csv")
+)
+
+dfr <- read.csv(
+  file.path(data_dir, "ECB DFR_01011999_17062026_clean.csv")
+)
+
+```
+
+# 2. Clean all source series needed to reproduce the exact estimation sample
+
+```{r}
+# Create a cleaned version of the NFC lending-rate dataset
+nfc_clean <- nfc %>%
+  
+  # Keep only the variables needed for my analysis:
+  # DATE = observation date
+  # cost_of_borrowing_for_corporations = NFC lending rate
+  select(DATE, cost_of_borrowing_for_corporations) %>%
+  
+   rename(
+    month = DATE,                 # DATE becomes month
+    LoanRate = cost_of_borrowing_for_corporations
+  ) %>%
+  
+  # Clean and transform variables
+  # Convert character date format into a proper date object
+  # dmy() = day-month-year format
+  mutate(
+       month = dmy(month),
+    
+    # By rounding all dates down to the first day of the month I can now create 
+    # consistent monthly frequency that can later be merged with ECB policy-rate
+    month = floor_date(month, "month"),
+    
+    # Ensure lending rates are treated as numeric values
+    # rather than text/characters
+    LoanRate = as.numeric(LoanRate)
+  )
+```
+
+```{r}
+# This section extends ECB data to match the NFC sample period, creates a continuous daily timeline, carries policy rates forward between ECB announcements, and then aggregates these observations into monthly averages.
+
+# Get the latest month available in the NFC dataset
+max_nfc_date <- max(nfc_clean$month, na.rm = TRUE)
+
+# Convert ECB policy-rate data to monthly frequency
+ecb_monthly <- ecb %>%
+  select(DATE, ECB_RATE) %>%
+  mutate(
+    # Standardize date and rate formats
+    DATE = dmy(DATE),
+    ECB_RATE = as.numeric(ECB_RATE)
+  ) %>%
+  arrange(DATE) %>%
+  
+  # Create a continuous daily timeline
+  complete(
+    DATE = seq.Date(min(DATE, na.rm = TRUE), max_nfc_date, by = "day")
+  ) %>%
+  arrange(DATE) %>%
+  
+  # Carry policy rates forward between ECB changes
+  fill(ECB_RATE, .direction = "down") %>%
+  
+  # Aggregate daily values into monthly averages
+  mutate(month = floor_date(DATE, "month")) %>% #Takes each date and rounds it down to the first day of its month
+  group_by(month) %>%                           #Group all observations that belong to the same month together
+  summarise(
+    ECBRate = mean(ECB_RATE, na.rm = TRUE),     #Convert daily ECB observations into a monthly series that can be merged with                                                       monthly NFC lending data.
+    .groups = "drop"                            # Removes the grouping structure afterward
+  )
+
+```
+
+```{r}
+#create a clean version of the HICP dataset
+hicp_clean <- hcip  %>%
+  
+  # Keep only the variables needed for my analysis:
+  # DATE = observation date
+  # cost_of_borrowing_for_corporations = NFC lending rate
+  select(DATE, OBS_VALUE) %>%
+  
+   rename(
+    month = DATE,                 # DATE becomes month
+    HICP = OBS_VALUE
+  ) %>%
+  
+  # Clean and transform variables
+  # Convert character date format into a proper date object
+  # dmy() = day-month-year format
+  mutate(
+       month = dmy(month),
+    
+    # By rounding all dates down to the first day of the month I can now create 
+    # consistent monthly frequency that can later be merged with ECB policy-rate
+    month = floor_date(month, "month"),
+    
+    # Ensure lending rates are treated as numeric values
+    # rather than text/characters
+    HICP = as.numeric(HICP)
+  )
+
+```
+
+```{r}
+#create a clean version of the EURIBOR dataset
+EURIBOR_clean <- euribor  %>%
+  
+  # Keep only the variables needed for my analysis:
+  # DATE = observation date
+  # cost_of_borrowing_for_corporations = NFC lending rate
+  select(DATE, EURIBOR_3MO) %>%
+  
+   rename(
+    month = DATE,                 # DATE becomes month
+    EURIBOR = EURIBOR_3MO
+  ) %>%
+  
+  # Clean and transform variables
+  # Convert character date format into a proper date object
+  # dmy() = day-month-year format
+  mutate(
+       month = dmy(month),
+    
+    # By rounding all dates down to the first day of the month I can now create 
+    # consistent monthly frequency that can later be merged with ECB policy-rate
+    month = floor_date(month, "month"),
+    
+    # Ensure lending rates are treated as numeric values
+    # rather than text/characters
+    EURIBOR = as.numeric(EURIBOR)
+  )
+
+```
+
+```{r}
+# Create a clean version of the household deposit-rate dataset
+deposit_rate_clean <- hh_deposit %>%
+  
+  # Keep only the variables needed for the analysis
+  select(DATE, overnight_deposits_from_households) %>%
+  
+  # Rename variables
+  rename(
+    month = DATE,
+    DepositRate = overnight_deposits_from_households
+  ) %>%
+  
+  # Clean and transform variables
+  mutate(
+    # Convert dates for monthly time-series analysis
+    month = dmy(month),
+    
+    # Standardize observations to monthly frequency
+    month = floor_date(month, "month"),
+    
+    # Ensure deposit rates are numeric
+    DepositRate = as.numeric(DepositRate)
+  )
+
+```
+
+```{r}
+# Create a cleaned-up version of the Deposit Facility Rate Dataset
+#keep only MONTH and DFR
+# Create clean version of DFR dataset
+DFR_clean <- dfr %>%
+  select(MONTH, DEPOSIT_FACILITY_RATE) %>%
+  rename(
+    month = MONTH,
+    DFR = DEPOSIT_FACILITY_RATE
+  ) %>%
+  mutate(
+    month = dmy(month),
+    month = floor_date(month, "month"),
+    DFR = as.numeric(DFR)
+  ) %>%
+  group_by(month) %>%
+  summarise(
+    DFR = last(DFR),
+    .groups = "drop"
+  )
+
+```
+
+# 3. Merge data exactly as in the original analysis
+
+```{r}
+# Create the main thesis dataset by merging NFC, ECB, HICP, EURIBOR, DFR and deposit-rate data
+thesis_data <- nfc_clean %>%
+  
+  # Standardize NFC data to monthly frequency
+  mutate(month = floor_date(month, "month")) %>%
+  
+  # Merge with monthly ECB policy-rate data
+  left_join(ecb_monthly, by = "month") %>%
+  
+  # Merge with monthly HICP data
+  left_join(hicp_clean, by = "month") %>%
+  
+  # Merge with EURIBOR data
+  left_join(EURIBOR_clean, by = "month") %>%
+  
+  # Merge with DFR data
+  left_join(DFR_clean, by = "month") %>%
+  
+  # Merge with household deposit-rate data
+  left_join(deposit_rate_clean, by = "month") %>%
+  
+  # Sort the dataset chronologically
+  arrange(month) %>%
+  
+  # Fill missing policy-rate values forward
+  # and calculate inflation/HICP change
+  mutate(
+    ECBRate = na.locf(ECBRate, na.rm = FALSE),
+    DFR     = na.locf(DFR, na.rm = FALSE),
+    
+    # Month-over-month HICP change
+    Inflation = 100 * (log(HICP) - log(lag(HICP, 1))),
+    
+    # YoY HICP change for descriptive statistics in figure 1 only
+    Inflation_YoY = 100 * (log(HICP) - log(lag(HICP,12)))
+  )
+
+```
+
+# 4. Figure 0
+
+# GITHUB CLEANUP [PATH ONLY]: Keep this figure code unchanged, but save to a repository-relative `outputs/figures/` path.
+# Add generated figures to `.gitignore` unless you deliberately want to version the final thesis image.
+```{r}
+# Create a line graph comparing NFC lending rate, ECB policy rate, DFR, and inflation
+fig0 <- thesis_data %>%
+  filter(!is.na(LoanRate), !is.na(ECBRate), !is.na(DFR), !is.na(Inflation)) %>%
+  
+  ggplot(aes(x = month)) +
+  
+  geom_line(
+    aes(y = LoanRate, color = "NFC Lending Rate"),
+    linewidth = 0.5
+  ) +
+  
+  geom_line(
+    aes(y = ECBRate, color = "ECB Policy Rate"),
+    linewidth = 0.5
+  ) +
+  
+  geom_line(
+    aes(y = DFR, color = "Deposit Facility Rate"),
+    linewidth = 0.5
+  ) +
+  
+  geom_line(
+    aes(y = Inflation_YoY, color = "HICP Inflation"),
+    linewidth = 0.5
+  ) +
+  
+  labs(
+    title = "ECB Policy Rates, Euro-Area NFC Lending Rate, and Inflation",
+    x = "Year",
+    y = "Percent (%)",
+    color = "",
+    caption = paste0(
+  "**Figure 0:** ECB policy rates, euro-area NFC lending rate, and HICP inflation.<br><br>",
+  
+  "*Note:* The figure plots monthly euro-area data.<br>",
+  "The NFC lending rate captures the cost of borrowing for non-financial corporations.<br>",
+  "The ECB policy rate refers to the Main Refinancing Operations (MRO) rate.<br>",
+  "The Deposit Facility Rate (DFR) captures the interest rate paid on excess reserves.<br>",
+  "Inflation is measured as the annual HICP inflation rate.<br><br>",
+  
+  "**Source:** European Central Bank (ECB) Data Portal."
+    )
+  ) +
+  
+  theme_minimal() +
+  
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom",
+    plot.caption = ggtext::element_textbox_simple(
+      size = 9,
+      hjust = 0,
+      width = unit(1, "npc"),
+      margin = margin(t = 10)
+    ),
+    plot.margin = margin(t = 10, r = 10, b = 35, l = 10)
+  )
+
+fig0
+
+if (!dir.exists("figures")) {
+  dir.create("figures")
+}
+
+ggsave(
+  filename = "figures/figure0.1_ecb_nfc_dfr_inflation.png",
+  plot = fig0,
+  width = 8,
+  height = 5,
+  dpi = 300,
+  bg = "white"
+)
+```
+
+# 5. Construct the regression dataset exactly as in the original analysis
+
+```{r}
+thesis_model <- thesis_data %>%
+  arrange(month) %>%
+  mutate(
+    # Monthly change in NFC lending rate
+    d_LoanRate = LoanRate - lag(LoanRate),
+    
+    # Monthly change in ECB policy rate
+    d_ECBRate = ECBRate - lag(ECBRate),
+    
+    #Monthly change in deposit facility rate
+    d_DFR = DFR - lag(DFR), 
+    
+    #Monthly change in Euribor
+    d_EURIBOR = EURIBOR - lag(EURIBOR),
+    
+    #Monthly change in deposit rate
+    d_DepositRate = DepositRate - lag(DepositRate),
+
+    # Post-2022 dummy
+    Post2022 = if_else(month >= as.Date("2022-07-01"), 1, 0),
+        
+    d_DepositRate_Post2022 = d_DepositRate * Post2022
+  ) %>%
+  
+  # Create ECB-rate-change lags from t-1 to t-12
+  mutate(
+    across(
+      .cols = d_ECBRate,
+      .fns = list(
+        lag1  = ~ lag(.x, 1),
+        lag2  = ~ lag(.x, 2),
+        lag3  = ~ lag(.x, 3),
+        lag4  = ~ lag(.x, 4),
+        lag5  = ~ lag(.x, 5),
+        lag6  = ~ lag(.x, 6),
+        lag7  = ~ lag(.x, 7),
+        lag8  = ~ lag(.x, 8),
+        lag9  = ~ lag(.x, 9),
+        lag10 = ~ lag(.x, 10),
+        lag11 = ~ lag(.x, 11),
+        lag12 = ~ lag(.x, 12)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  ) %>%
+  
+# Create DFR-rate-change lags from t-1 to t-12
+  mutate(
+    across(
+      .cols = d_DFR,
+      .fns = list(
+        lag1  = ~ lag(.x, 1),
+        lag2  = ~ lag(.x, 2),
+        lag3  = ~ lag(.x, 3),
+        lag4  = ~ lag(.x, 4),
+        lag5  = ~ lag(.x, 5),
+        lag6  = ~ lag(.x, 6),
+        lag7  = ~ lag(.x, 7),
+        lag8  = ~ lag(.x, 8),
+        lag9  = ~ lag(.x, 9),
+        lag10 = ~ lag(.x, 10),
+        lag11 = ~ lag(.x, 11),
+        lag12 = ~ lag(.x, 12)
+      ),
+      .names = "{.col}_{.fn}"
+    )
+  ) %>%
+  
+  # Create interaction terms for t, t-1, ..., t-12
+  mutate(
+    d_ECBRate_Post2022 = d_ECBRate * Post2022,
+    across(
+      .cols = starts_with("d_ECBRate_lag"),
+      .fns = ~ .x * Post2022,
+      .names = "{.col}_Post2022"
+    )
+  ) %>%
+  
+  # Drop missing rows caused by differencing and 12 lags
+  drop_na()
+
+```
+
+# 6. Main thesis models and tables
+
+```{r}
+#Model 1: BASELINE MODEL PASS-THROUGH
+# Estimate the baseline pass-through regression model with lags up to t-12
+model_baseline <- lm(
+  d_LoanRate ~ 
+    d_ECBRate +
+    d_ECBRate_lag1 +
+    d_ECBRate_lag2 +
+    d_ECBRate_lag3 +
+    d_ECBRate_lag4 +
+    d_ECBRate_lag5 +
+    d_ECBRate_lag6 +
+    d_ECBRate_lag7 +
+    d_ECBRate_lag8 +
+    d_ECBRate_lag9 +
+    d_ECBRate_lag10 +
+    d_ECBRate_lag11 +
+    d_ECBRate_lag12,
+  data = thesis_model
+)
+
+# GITHUB CLEANUP [OPTIONAL]: Console model output may be retained for transparency or suppressed in the rendered notebook.
+# Do not alter the model object or Newey-West covariance settings.
+# Display regression results with Newey-West standard errors
+# Newey-West corrects for heteroskedasticity and autocorrelation, not multicollinearity
+coeftest(
+  model_baseline,
+  vcov. = NeweyWest(model_baseline, lag = 12, prewhite = FALSE)
+)
+
+# Create formatted regression table
+table_baseline <- modelsummary(
+  model_baseline,
+  
+  # Newey-West standard errors with 12 lags
+  vcov = NeweyWest(model_baseline, lag = 12, prewhite = FALSE),
+  
+  coef_rename = c(
+    "(Intercept)" = "Constant",
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12"
+  ),
+  
+  gof_map = data.frame(
+    raw = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt = c(0, 3, 3)
+  ),
+  
+  stars = TRUE,
+  fmt = 3,
+  title = "Table 1. Baseline Pass-Through Regression Results",
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "Immediate and lagged ECB policy-rate changes are included (with lags up to twelve months)."
+  ),
+  output = "flextable"
+)
+
+table_baseline <- table_baseline |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 10, part = "all") |>
+  padding(padding = 4, part = "all")
+
+table_baseline
+
+save_as_docx(
+  "Table 1. Baseline Pass-Through Regression Results" = table_baseline,
+  path = file.path("outputs", "table1_baseline_pass_through.docx")
+)
+```
+
+```{r}
+# Model 2: BASELINE MODEL PASS-THROUGH >> CONTROLING FOR INFLATION
+# Create 12 lags of monthly HICP changes
+thesis_model <- thesis_model |>
+  dplyr::arrange(month) |>
+  dplyr::mutate(
+    Inflation_lag1  = dplyr::lag(Inflation, 1),
+    Inflation_lag2  = dplyr::lag(Inflation, 2),
+    Inflation_lag3  = dplyr::lag(Inflation, 3),
+    Inflation_lag4  = dplyr::lag(Inflation, 4),
+    Inflation_lag5  = dplyr::lag(Inflation, 5),
+    Inflation_lag6  = dplyr::lag(Inflation, 6),
+    Inflation_lag7  = dplyr::lag(Inflation, 7),
+    Inflation_lag8  = dplyr::lag(Inflation, 8),
+    Inflation_lag9  = dplyr::lag(Inflation, 9),
+    Inflation_lag10 = dplyr::lag(Inflation, 10),
+    Inflation_lag11 = dplyr::lag(Inflation, 11),
+    Inflation_lag12 = dplyr::lag(Inflation, 12)
+  )
+
+# Estimate baseline model controlling for inflation with 12 distributed lags
+model_baseline_inflation <- lm(
+  d_LoanRate ~
+    d_ECBRate +
+    d_ECBRate_lag1 +
+    d_ECBRate_lag2 +
+    d_ECBRate_lag3 +
+    d_ECBRate_lag4 +
+    d_ECBRate_lag5 +
+    d_ECBRate_lag6 +
+    d_ECBRate_lag7 +
+    d_ECBRate_lag8 +
+    d_ECBRate_lag9 +
+    d_ECBRate_lag10 +
+    d_ECBRate_lag11 +
+    d_ECBRate_lag12 +
+    Inflation +
+    Inflation_lag1 +
+    Inflation_lag2 +
+    Inflation_lag3 +
+    Inflation_lag4 +
+    Inflation_lag5 +
+    Inflation_lag6 +
+    Inflation_lag7 +
+    Inflation_lag8 +
+    Inflation_lag9 +
+    Inflation_lag10 +
+    Inflation_lag11 +
+    Inflation_lag12,
+  data = thesis_model
+)
+
+# Create Newey-West covariance matrix with 12 lags
+nw_inflation <- NeweyWest(
+  model_baseline_inflation,
+  lag = 12,
+  prewhite = FALSE
+)
+
+# Create publication-ready table
+table2 <- modelsummary(
+  model_baseline_inflation,
+  vcov = nw_inflation,
+
+  coef_rename = c(
+    "(Intercept)" = "Constant",
+
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12",
+
+    "Inflation" = "Monthly HICP Change",
+    "Inflation_lag1" = "Monthly HICP Change, t-1",
+    "Inflation_lag2" = "Monthly HICP Change, t-2",
+    "Inflation_lag3" = "Monthly HICP Change, t-3",
+    "Inflation_lag4" = "Monthly HICP Change, t-4",
+    "Inflation_lag5" = "Monthly HICP Change, t-5",
+    "Inflation_lag6" = "Monthly HICP Change, t-6",
+    "Inflation_lag7" = "Monthly HICP Change, t-7",
+    "Inflation_lag8" = "Monthly HICP Change, t-8",
+    "Inflation_lag9" = "Monthly HICP Change, t-9",
+    "Inflation_lag10" = "Monthly HICP Change, t-10",
+    "Inflation_lag11" = "Monthly HICP Change, t-11",
+    "Inflation_lag12" = "Monthly HICP Change, t-12"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 2. Pass-Through Regression with Distributed Inflation Controls",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "The model includes contemporaneous and lagged ECB policy-rate changes up to twelve months.",
+    "The model also includes contemporaneous and lagged monthly HICP changes up to twelve months.",
+    "HICP is measured as an index with 2025 = 100."
+  ),
+
+  output = "flextable"
+)
+
+# Format table
+table2 <- table2 |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 8, part = "all") |>
+  padding(padding = 2, part = "all")
+
+# Display table
+table2
+
+# GITHUB CLEANUP [PATH ONLY]: Keep the export code, but use a relative output path.
+# Generated `.docx` tables are usually added to `.gitignore` unless they are intended repository deliverables.
+# Save to Word
+save_as_docx(
+  "Table 2. Pass-Through Regression with Distributed Inflation Controls" = table2,
+  path = file.path("outputs", "Table2_Pass-through_controling_for_HICP_12lags.docx")
+)
+```
+
+```{r}
+# Table 2_short: Baseline model controlling for inflation
+# HICP controls are included but omitted from the table
+
+table2_short <- modelsummary(
+  model_baseline_inflation,
+  vcov = nw_inflation,
+
+  coef_map = c(
+    "(Intercept)" = "Constant",
+
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 2. Pass-Through Regression Controlling for Inflation",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "The model includes contemporaneous and lagged ECB policy-rate changes up to twelve months.",
+    "The model also includes contemporaneous and twelve lagged monthly HICP controls.",
+    "HICP coefficients are omitted from the table for brevity.",
+    "The full specification including all HICP coefficients is reported in Appendix Table A.1."
+  ),
+
+  output = "flextable"
+)
+
+table2_short <- table2_short |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 9, part = "all") |>
+  padding(padding = 3, part = "all")
+
+table2_short
+
+save_as_docx(
+  "Table 2. Pass-Through Regression Controlling for Inflation" = table2_short,
+  path = file.path("outputs", "Table2_short_HICP_controls_omitted.docx")
+)
+```
+
+```{r}
+# Model 4_Post_2022_Inflation_Long : Post-2022 pass-through model controlling for inflation
+# Model 4: Post-2022 pass-through model controlling for inflation
+model_post2022_inflation <- lm(
+  d_LoanRate ~
+
+    d_ECBRate +
+    d_ECBRate_lag1 +
+    d_ECBRate_lag2 +
+    d_ECBRate_lag3 +
+    d_ECBRate_lag4 +
+    d_ECBRate_lag5 +
+    d_ECBRate_lag6 +
+    d_ECBRate_lag7 +
+    d_ECBRate_lag8 +
+    d_ECBRate_lag9 +
+    d_ECBRate_lag10 +
+    d_ECBRate_lag11 +
+    d_ECBRate_lag12 +
+
+    Post2022 +
+
+    d_ECBRate_Post2022 +
+    d_ECBRate_lag1_Post2022 +
+    d_ECBRate_lag2_Post2022 +
+    d_ECBRate_lag3_Post2022 +
+    d_ECBRate_lag4_Post2022 +
+    d_ECBRate_lag5_Post2022 +
+    d_ECBRate_lag6_Post2022 +
+    d_ECBRate_lag7_Post2022 +
+    d_ECBRate_lag8_Post2022 +
+    d_ECBRate_lag9_Post2022 +
+    d_ECBRate_lag10_Post2022 +
+    d_ECBRate_lag11_Post2022 +
+    d_ECBRate_lag12_Post2022 +
+
+    Inflation +
+    Inflation_lag1 +
+    Inflation_lag2 +
+    Inflation_lag3 +
+    Inflation_lag4 +
+    Inflation_lag5 +
+    Inflation_lag6 +
+    Inflation_lag7 +
+    Inflation_lag8 +
+    Inflation_lag9 +
+    Inflation_lag10 +
+    Inflation_lag11 +
+    Inflation_lag12,
+
+  data = thesis_model
+)
+
+# Newey-West covariance matrix
+nw_post2022_inflation <- NeweyWest(
+  model_post2022_inflation,
+  lag = 12,
+  prewhite = FALSE
+) 
+
+# Create publication-ready table
+table14 <- modelsummary(
+  model_post2022_inflation,
+  vcov = nw_post2022_inflation,
+
+  coef_rename = c(
+
+    "(Intercept)" = "Constant",
+    "Post2022" = "Post-2022 Period",
+
+    # ECB coefficients
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12",
+
+    # Post-2022 interactions
+    "d_ECBRate_Post2022" = "Change in ECB Policy Rate × Post-2022",
+    "d_ECBRate_lag1_Post2022" = "Change in ECB Policy Rate, t-1 × Post-2022",
+    "d_ECBRate_lag2_Post2022" = "Change in ECB Policy Rate, t-2 × Post-2022",
+    "d_ECBRate_lag3_Post2022" = "Change in ECB Policy Rate, t-3 × Post-2022",
+    "d_ECBRate_lag4_Post2022" = "Change in ECB Policy Rate, t-4 × Post-2022",
+    "d_ECBRate_lag5_Post2022" = "Change in ECB Policy Rate, t-5 × Post-2022",
+    "d_ECBRate_lag6_Post2022" = "Change in ECB Policy Rate, t-6 × Post-2022",
+    "d_ECBRate_lag7_Post2022" = "Change in ECB Policy Rate, t-7 × Post-2022",
+    "d_ECBRate_lag8_Post2022" = "Change in ECB Policy Rate, t-8 × Post-2022",
+    "d_ECBRate_lag9_Post2022" = "Change in ECB Policy Rate, t-9 × Post-2022",
+    "d_ECBRate_lag10_Post2022" = "Change in ECB Policy Rate, t-10 × Post-2022",
+    "d_ECBRate_lag11_Post2022" = "Change in ECB Policy Rate, t-11 × Post-2022",
+    "d_ECBRate_lag12_Post2022" = "Change in ECB Policy Rate, t-12 × Post-2022",
+
+    # Inflation coefficients
+    "Inflation" = "Monthly HICP Change",
+    "Inflation_lag1" = "Monthly HICP Change, t-1",
+    "Inflation_lag2" = "Monthly HICP Change, t-2",
+    "Inflation_lag3" = "Monthly HICP Change, t-3",
+    "Inflation_lag4" = "Monthly HICP Change, t-4",
+    "Inflation_lag5" = "Monthly HICP Change, t-5",
+    "Inflation_lag6" = "Monthly HICP Change, t-6",
+    "Inflation_lag7" = "Monthly HICP Change, t-7",
+    "Inflation_lag8" = "Monthly HICP Change, t-8",
+    "Inflation_lag9" = "Monthly HICP Change, t-9",
+    "Inflation_lag10" = "Monthly HICP Change, t-10",
+    "Inflation_lag11" = "Monthly HICP Change, t-11",
+    "Inflation_lag12" = "Monthly HICP Change, t-12"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 4. Post-2022 Pass-Through Regression with Distributed Inflation Controls",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "Post-2022 equals 1 from July 2022 onward and 0 otherwise.",
+    "The model includes contemporaneous and lagged ECB policy-rate changes up to twelve months.",
+    "The model also includes contemporaneous and lagged monthly HICP changes up to twelve months.",
+    "Interaction terms test whether pass-through changed during the post-2022 tightening cycle."
+  ),
+
+  output = "flextable"
+)
+
+# Format table
+table14 <- table14 |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 8, part = "all") |>
+  padding(padding = 2, part = "all")
+
+# Display table
+table14
+
+# GITHUB CLEANUP [PATH ONLY]: Same principle—use a relative output directory; do not change the model/table content.
+# Save to Word
+save_as_docx(
+  "Table 14. Post-2022 Pass-Through Regression with Distributed Inflation Controls" = table14,
+  path = file.path("outputs", "Table14_Post2022_Inflation.docx")
+)
+```
+
+```{r}
+# Model_4_Post-2022_Inflation_Short: Post-2022 Pass-Through Regression Controlling for Inflation (Short)
+# Inflation coefficients are included in the model but omitted from the table
+
+table4_short <- modelsummary(
+  model_post2022_inflation,
+  vcov = nw_post2022_inflation,
+
+  coef_map = c(
+    "(Intercept)" = "Constant",
+    "Post2022" = "Post-2022 Period",
+
+    # ECB coefficients
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12",
+
+    # Post-2022 interactions
+    "d_ECBRate_Post2022" = "Change in ECB Policy Rate × Post-2022",
+    "d_ECBRate_lag1_Post2022" = "Change in ECB Policy Rate, t-1 × Post-2022",
+    "d_ECBRate_lag2_Post2022" = "Change in ECB Policy Rate, t-2 × Post-2022",
+    "d_ECBRate_lag3_Post2022" = "Change in ECB Policy Rate, t-3 × Post-2022",
+    "d_ECBRate_lag4_Post2022" = "Change in ECB Policy Rate, t-4 × Post-2022",
+    "d_ECBRate_lag5_Post2022" = "Change in ECB Policy Rate, t-5 × Post-2022",
+    "d_ECBRate_lag6_Post2022" = "Change in ECB Policy Rate, t-6 × Post-2022",
+    "d_ECBRate_lag7_Post2022" = "Change in ECB Policy Rate, t-7 × Post-2022",
+    "d_ECBRate_lag8_Post2022" = "Change in ECB Policy Rate, t-8 × Post-2022",
+    "d_ECBRate_lag9_Post2022" = "Change in ECB Policy Rate, t-9 × Post-2022",
+    "d_ECBRate_lag10_Post2022" = "Change in ECB Policy Rate, t-10 × Post-2022",
+    "d_ECBRate_lag11_Post2022" = "Change in ECB Policy Rate, t-11 × Post-2022",
+    "d_ECBRate_lag12_Post2022" = "Change in ECB Policy Rate, t-12 × Post-2022"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 4. Post-2022 Pass-Through Regression Controlling for Inflation",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "Post-2022 equals 1 from July 2022 onward and 0 otherwise.",
+    "The model includes contemporaneous and lagged ECB policy-rate changes up to twelve months.",
+    "The model includes contemporaneous and twelve lagged monthly HICP controls.",
+    "Inflation coefficients are omitted from the table for brevity and reported in Appendix Table A.2.",
+    "Interaction terms test whether pass-through changed during the post-2022 tightening cycle."
+  ),
+
+  output = "flextable"
+)
+
+table4_short <- table4_short |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 8, part = "all") |>
+  padding(padding = 2, part = "all")
+
+table4_short
+
+save_as_docx(
+  "Table 4_short. Post-2022 Pass-Through Regression Controlling for Inflation Short" = table4_short,
+  path = file.path("outputs", "Table4_Post2022_Inflation_Short.docx")
+)
+```
+
+# 7. Wald tests
+
+```{r}
+#Wald tests
+#Model 5: Wald test for effect of contribution inflation 
+#Wald test of inflation lags
+inflation_wald <- linearHypothesis(
+  model_baseline_inflation,
+  c(
+    "Inflation = 0",
+    "Inflation_lag1 = 0",
+    "Inflation_lag2 = 0",
+    "Inflation_lag3 = 0",
+    "Inflation_lag4 = 0",
+    "Inflation_lag5 = 0",
+    "Inflation_lag6 = 0",
+    "Inflation_lag7 = 0",
+    "Inflation_lag8 = 0",
+    "Inflation_lag9 = 0",
+    "Inflation_lag10 = 0",
+    "Inflation_lag11 = 0",
+    "Inflation_lag12 = 0"
+  ),
+  vcov = nw_inflation
+)
+
+# Create corrected table
+inflation_wald_table <- data.frame(
+  Test = "Joint significance of inflation lags (0-12 months)",
+  F_statistic = round(inflation_wald$F[2], 3),
+  Degrees_of_Freedom_1 = "13",
+  Degrees_of_Freedom_2 = inflation_wald$Res.Df[2],
+  P_value = format.pval(inflation_wald$`Pr(>F)`[2], digits = 3)
+)
+
+# Convert to flextable
+inflation_wald_flextable <- flextable(inflation_wald_table) |>
+  theme_booktabs() |>
+  autofit() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 10, part = "all") |>
+  padding(padding = 4, part = "all") |>
+  add_footer_lines(
+    c(
+      "Notes:",
+      "The null hypothesis states that all inflation coefficients from t to t-12 are jointly equal to zero.",
+      "Newey-West standard errors with 12 lags are used."
+    )
+  )
+
+# Display
+inflation_wald_flextable
+
+# GITHUB CLEANUP [PATH ONLY]: Use a relative output directory for the generated Wald-test table.
+# Save to Word
+save_as_docx(
+  "Table 6. Wald Test of Joint Significance of Monthly HICP Controls" = inflation_wald_flextable,
+  path = file.path("outputs", "Table 6. Wald Test of Joint Significance of Monthly HICP Controls.docx")
+)
+```
+
+```{r}
+# Model 6
+# Wald test: joint significance of all Post-2022 interaction terms
+# controlling for distributed inflation controls
+wald_post2022_interactions_inflation <- linearHypothesis(
+  model_post2022_inflation,
+  c(
+    "d_ECBRate_Post2022 = 0",
+    "d_ECBRate_lag1_Post2022 = 0",
+    "d_ECBRate_lag2_Post2022 = 0",
+    "d_ECBRate_lag3_Post2022 = 0",
+    "d_ECBRate_lag4_Post2022 = 0",
+    "d_ECBRate_lag5_Post2022 = 0",
+    "d_ECBRate_lag6_Post2022 = 0",
+    "d_ECBRate_lag7_Post2022 = 0",
+    "d_ECBRate_lag8_Post2022 = 0",
+    "d_ECBRate_lag9_Post2022 = 0",
+    "d_ECBRate_lag10_Post2022 = 0",
+    "d_ECBRate_lag11_Post2022 = 0",
+    "d_ECBRate_lag12_Post2022 = 0"
+  ),
+  vcov = nw_post2022_inflation
+)
+
+wald_post2022_interactions_inflation
+
+# Extract Wald test results
+table5_data <- data.frame(
+  Test = "Joint significance of Post-2022 interaction terms (t to t-12)",
+  `F-statistic` = round(wald_post2022_interactions_inflation$F[2], 3),
+  `Degrees of Freedom 1` = wald_post2022_interactions_inflation$Df[2],
+  `Degrees of Freedom 2` = wald_post2022_interactions_inflation$Res.Df[2],
+  `P-value` = format.pval(
+    wald_post2022_interactions_inflation$`Pr(>F)`[2],
+    digits = 3,
+    eps = .0001
+  )
+)
+
+# Create publication-style table
+table5 <- flextable(table5_data) |>
+  theme_booktabs() |>
+  autofit() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 10, part = "all") |>
+  padding(padding = 4, part = "all") |>
+  add_footer_lines(
+    c(
+      "Notes:",
+      "The null hypothesis states that the contemporaneous and lagged Post-2022 interaction coefficients are jointly equal to zero.",
+      "The test evaluates whether ECB pass-through changed following the onset of the July 2022 tightening cycle.",
+      "Newey-West standard errors with 12 lags are used."
+    )
+  )
+
+# Display
+table5
+
+# GITHUB CLEANUP [PATH ONLY]: Use a relative output directory for the generated Wald-test table.
+# Save to Word
+save_as_docx(
+  "Table 5. Wald Test of Joint Significance of Post-2022 Interaction Terms" = table5,
+  path = file.path("outputs", "Table5_Wald_Post2022_Interactions.docx")
+)
+```
+
+```{r}
+#Model 7 Wald test for Post-2022 short-run pass-through controling for inflation (lag 1-3)
+# Wald test: short-run pass-through controlling for inflation
+# Tests whether ECB policy-rate lags 1–3 are jointly equal to zero
+
+wald_short_run_inflation <- linearHypothesis(
+  model_post2022_inflation,
+  c(
+    "d_ECBRate_lag1 = 0",
+    "d_ECBRate_lag2 = 0",
+    "d_ECBRate_lag3 = 0"
+  ),
+  vcov = nw_post2022_inflation
+)
+
+wald_short_run_inflation
+```
+
+```{r}
+# Model 8:Wald test for Post-2022 long-run pass-through controling for inflation (lag 4-12)
+# Wald test: longer-run pass-through controlling for inflation
+# Tests whether ECB policy-rate lags 4–12 are jointly equal to zero
+
+wald_long_run_inflation <- linearHypothesis(
+  model_post2022_inflation,
+  c(
+    "d_ECBRate_lag4 = 0",
+    "d_ECBRate_lag5 = 0",
+    "d_ECBRate_lag6 = 0",
+    "d_ECBRate_lag7 = 0",
+    "d_ECBRate_lag8 = 0",
+    "d_ECBRate_lag9 = 0",
+    "d_ECBRate_lag10 = 0",
+    "d_ECBRate_lag11 = 0",
+    "d_ECBRate_lag12 = 0"
+  ),
+  vcov = nw_post2022_inflation
+)
+
+wald_long_run_inflation
+```
+
+```{r}
+# Create combined Wald-test table for pass-through speed
+
+table6_data <- data.frame(
+  Test = c(
+    "Short-run pass-through effects (lags 1-3)",
+    "Longer-run pass-through effects (lags 4-12)"
+  ),
+  `F-statistic` = c(
+    round(wald_short_run_inflation$F[2], 3),
+    round(wald_long_run_inflation$F[2], 3)
+  ),
+  `Df 1` = c(
+    wald_short_run_inflation$Df[2],
+    wald_long_run_inflation$Df[2]
+  ),
+  `Df 2` = c(
+    wald_short_run_inflation$Res.Df[2],
+    wald_long_run_inflation$Res.Df[2]
+  ),
+  `P-value` = c(
+    format.pval(wald_short_run_inflation$`Pr(>F)`[2], digits = 3, eps = .001),
+    format.pval(wald_long_run_inflation$`Pr(>F)`[2], digits = 3, eps = .001)
+  ),
+  check.names=FALSE
+)
+
+# Create flextable
+table6 <- flextable(table6_data) |>
+  theme_booktabs() |>
+  autofit() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 10, part = "all") |>
+  padding(padding = 4, part = "all") |>
+  add_footer_lines(
+    c(
+      "Notes:",
+      "The table reports Wald tests of the joint significance of ECB policy-rate lag coefficients in the inflation-controlled Post-2022 interaction model, controlling for inflation.",
+      "The short-run test examines whether lags 1 to 3 are jointly equal to zero.",
+      "The longer-run test examines whether lags 4 to 12 are jointly equal to zero.",
+      "Newey-West standard errors with 12 lags are used."
+    )
+  )
+
+# Display table
+table6
+
+# GITHUB CLEANUP [PATH ONLY]: Use a relative output directory for the generated speed-test table.
+# Save to Word
+save_as_docx(
+  "Table 6. Wald Tests of Short-Run and Longer-Run Pass-Through Effects" = table6,
+  path = file.path("outputs", "Table6_Wald_Short_Long_Run_PassThrough.docx")
+)
+```
+
+# 8. Robustness checks
+
+```{r}
+# Model 9: DFR model
+
+model_dfr <- lm(
+  d_LoanRate ~
+    d_DFR +
+    d_DFR_lag1 +
+    d_DFR_lag2 +
+    d_DFR_lag3 +
+    d_DFR_lag4 +
+    d_DFR_lag5 +
+    d_DFR_lag6 +
+    d_DFR_lag7 +
+    d_DFR_lag8 +
+    d_DFR_lag9 +
+    d_DFR_lag10 +
+    d_DFR_lag11 +
+    d_DFR_lag12,
+  data = thesis_model
+)
+
+nw_dfr <- NeweyWest(model_dfr, lag = 12, prewhite = FALSE)
+
+table_dfr <- modelsummary(
+  model_dfr,
+  vcov = nw_dfr,
+
+  coef_rename = c(
+    "(Intercept)" = "Constant",
+
+    "d_DFR" = "Change in Deposit Facility Rate",
+    "d_DFR_lag1" = "Change in Deposit Facility Rate, t-1",
+    "d_DFR_lag2" = "Change in Deposit Facility Rate, t-2",
+    "d_DFR_lag3" = "Change in Deposit Facility Rate, t-3",
+    "d_DFR_lag4" = "Change in Deposit Facility Rate, t-4",
+    "d_DFR_lag5" = "Change in Deposit Facility Rate, t-5",
+    "d_DFR_lag6" = "Change in Deposit Facility Rate, t-6",
+    "d_DFR_lag7" = "Change in Deposit Facility Rate, t-7",
+    "d_DFR_lag8" = "Change in Deposit Facility Rate, t-8",
+    "d_DFR_lag9" = "Change in Deposit Facility Rate, t-9",
+    "d_DFR_lag10" = "Change in Deposit Facility Rate, t-10",
+    "d_DFR_lag11" = "Change in Deposit Facility Rate, t-11",
+    "d_DFR_lag12" = "Change in Deposit Facility Rate, t-12"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 7. Deposit Facility Rate Pass-Through Regression Results",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the euro-area NFC lending rate.",
+    "The model includes contemporaneous and lagged changes in the ECB Deposit Facility Rate up to twelve months."
+  ),
+
+  output = "flextable"
+)
+
+# Format table
+table_dfr <- table_dfr |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 8, part = "all") |>
+  padding(padding = 2, part = "all")
+
+table_dfr
+
+save_as_docx(
+  "Table 7. Deposit Facility Rate Pass-Through Regression Results" = table_dfr,
+  path = file.path("outputs", "Table7_DFR_Pass_Through.docx")
+)
+```
+
+```{r}
+# Comparison of Alternative ECB Policy Rate Measures (MRO vs DFR).
+# GITHUB CLEANUP [TYPO/COMMENT ONLY]: Rewrite this comment more professionally; the underlying comparison code can stay.
+# Try to compare the coefficients of all 12 lags in both models
+# GITHUB CLEANUP [TYPO]: Change `Vreate` to `Create`. This is comment-only and has no numerical effect.
+# Vreate a helper function to add significance stars
+stars <- function(p) {
+  ifelse(p < 0.001, "***",
+  ifelse(p < 0.01, "**",
+  ifelse(p < 0.05, "*",
+  ifelse(p < 0.1, "+", ""))))
+}
+
+# Newey-West coefficient tests
+mro_ct <- coeftest(
+  model_baseline,
+  vcov = NeweyWest(model_baseline, lag = 12, prewhite = FALSE)
+)
+
+dfr_ct <- coeftest(
+  model_dfr,
+  vcov = NeweyWest(model_dfr, lag = 12, prewhite = FALSE)
+)
+
+# Variable names
+mro_vars <- c("d_ECBRate", paste0("d_ECBRate_lag", 1:12))
+dfr_vars <- c("d_DFR", paste0("d_DFR_lag", 1:12))
+
+# Coefficients with stars
+mro_coef <- paste0(
+  round(mro_ct[mro_vars, "Estimate"], 3),
+  stars(mro_ct[mro_vars, "Pr(>|t|)"])
+)
+
+dfr_coef <- paste0(
+  round(dfr_ct[dfr_vars, "Estimate"], 3),
+  stars(dfr_ct[dfr_vars, "Pr(>|t|)"])
+)
+
+# Create table data
+table9_data <- data.frame(
+  Coefficient = c(
+    "Contemporaneous",
+    paste0("Lag ", 1:12),
+    "12-month cumulative Pass-Through",
+    "R-squared",
+    "Adjusted R-squared",
+    "Observations"
+  ),
+
+  `MRO` = c(
+    mro_coef,
+    round(sum(coef(model_baseline)[mro_vars]), 3),
+    round(summary(model_baseline)$r.squared, 3),
+    round(summary(model_baseline)$adj.r.squared, 3),
+    nobs(model_baseline)
+  ),
+
+  `DFR` = c(
+    dfr_coef,
+    round(sum(coef(model_dfr)[dfr_vars]), 3),
+    round(summary(model_dfr)$r.squared, 3),
+    round(summary(model_dfr)$adj.r.squared, 3),
+    nobs(model_dfr)
+  ),
+  check.names=FALSE
+)
+
+# Create flextable
+table9 <- flextable(table9_data) |>
+  theme_booktabs() |>
+  autofit() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 9, part = "all") |>
+  padding(padding = 3, part = "all") |>
+  add_footer_lines(
+    c(
+      "Notes:",
+      "The table compares the baseline MRO specification with an alternative specification using the ECB Deposit Facility Rate.",
+      "Both models include contemporaneous and lagged policy-rate changes up to twelve months.",
+      "Significance stars are based on Newey-West standard errors with 12 lags.",
+      "12-month cumulative pass-through is calculated as the sum of the contemporaneous coefficient and lag coefficients from t-1 to t-12.",
+      "+ p < 0.1, * p < 0.05, ** p < 0.01, *** p < 0.001."
+    )
+  )
+
+# Display table
+table9
+
+# GITHUB CLEANUP [PATH ONLY]: Use a relative output directory for the comparison table.
+# Save to Word
+save_as_docx(
+  "Table 8. Comparison of MRO and DFR Pass-Through Estimates" = table9,
+  path = file.path("outputs", "Table9_MRO_DFR_Comparison.docx")
+)
+```
+
+```{r}
+# Model 10: EURIBOR transmission model
+model_euribor_post2022 <- lm(
+  d_EURIBOR ~
+
+    d_ECBRate +
+    d_ECBRate_lag1 +
+    d_ECBRate_lag2 +
+    d_ECBRate_lag3 +
+    d_ECBRate_lag4 +
+    d_ECBRate_lag5 +
+    d_ECBRate_lag6 +
+    d_ECBRate_lag7 +
+    d_ECBRate_lag8 +
+    d_ECBRate_lag9 +
+    d_ECBRate_lag10 +
+    d_ECBRate_lag11 +
+    d_ECBRate_lag12 +
+
+    d_ECBRate_Post2022 +
+    d_ECBRate_lag1_Post2022 +
+    d_ECBRate_lag2_Post2022 +
+    d_ECBRate_lag3_Post2022 +
+    d_ECBRate_lag4_Post2022 +
+    d_ECBRate_lag5_Post2022 +
+    d_ECBRate_lag6_Post2022 +
+    d_ECBRate_lag7_Post2022 +
+    d_ECBRate_lag8_Post2022 +
+    d_ECBRate_lag9_Post2022 +
+    d_ECBRate_lag10_Post2022 +
+    d_ECBRate_lag11_Post2022 +
+    d_ECBRate_lag12_Post2022,
+
+  data = thesis_model
+)
+
+# Newey-West covariance matrix
+nw_euribor_post2022 <- NeweyWest(
+  model_euribor_post2022,
+  lag = 12,
+  prewhite = FALSE
+)
+```
+
+```{r}
+# EURIBOR transmission model: ECB policy-rate pass-through to money-market rates
+# Create Newey-West covariance matrix
+nw_euribor_post2022 <- NeweyWest(
+  model_euribor_post2022,
+  lag = 12,
+  prewhite = FALSE
+)
+
+# Create publication-ready table
+table10 <- modelsummary(
+  model_euribor_post2022,
+  vcov = nw_euribor_post2022,
+
+  coef_rename = c(
+
+    "(Intercept)" = "Constant",
+
+    "d_ECBRate" = "Change in ECB Policy Rate",
+    "d_ECBRate_lag1" = "Change in ECB Policy Rate, t-1",
+    "d_ECBRate_lag2" = "Change in ECB Policy Rate, t-2",
+    "d_ECBRate_lag3" = "Change in ECB Policy Rate, t-3",
+    "d_ECBRate_lag4" = "Change in ECB Policy Rate, t-4",
+    "d_ECBRate_lag5" = "Change in ECB Policy Rate, t-5",
+    "d_ECBRate_lag6" = "Change in ECB Policy Rate, t-6",
+    "d_ECBRate_lag7" = "Change in ECB Policy Rate, t-7",
+    "d_ECBRate_lag8" = "Change in ECB Policy Rate, t-8",
+    "d_ECBRate_lag9" = "Change in ECB Policy Rate, t-9",
+    "d_ECBRate_lag10" = "Change in ECB Policy Rate, t-10",
+    "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
+    "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12",
+
+    "d_ECBRate_Post2022" = "Change in ECB Policy Rate × Post-2022",
+    "d_ECBRate_lag1_Post2022" = "Change in ECB Policy Rate, t-1 × Post-2022",
+    "d_ECBRate_lag2_Post2022" = "Change in ECB Policy Rate, t-2 × Post-2022",
+    "d_ECBRate_lag3_Post2022" = "Change in ECB Policy Rate, t-3 × Post-2022",
+    "d_ECBRate_lag4_Post2022" = "Change in ECB Policy Rate, t-4 × Post-2022",
+    "d_ECBRate_lag5_Post2022" = "Change in ECB Policy Rate, t-5 × Post-2022",
+    "d_ECBRate_lag6_Post2022" = "Change in ECB Policy Rate, t-6 × Post-2022",
+    "d_ECBRate_lag7_Post2022" = "Change in ECB Policy Rate, t-7 × Post-2022",
+    "d_ECBRate_lag8_Post2022" = "Change in ECB Policy Rate, t-8 × Post-2022",
+    "d_ECBRate_lag9_Post2022" = "Change in ECB Policy Rate, t-9 × Post-2022",
+    "d_ECBRate_lag10_Post2022" = "Change in ECB Policy Rate, t-10 × Post-2022",
+    "d_ECBRate_lag11_Post2022" = "Change in ECB Policy Rate, t-11 × Post-2022",
+    "d_ECBRate_lag12_Post2022" = "Change in ECB Policy Rate, t-12 × Post-2022"
+  ),
+
+  gof_map = data.frame(
+    raw   = c("nobs", "r.squared", "adj.r.squared"),
+    clean = c("Observations", "R-squared", "Adjusted R-squared"),
+    fmt   = c(0, 3, 3)
+  ),
+
+  stars = TRUE,
+  fmt = 3,
+
+  title = "Table 10. ECB Policy Rate Pass-Through to EURIBOR",
+
+  notes = c(
+    "Notes:",
+    "Newey-West standard errors with 12 lags are reported in parentheses.",
+    "The dependent variable is the monthly change in the 3-month EURIBOR rate.",
+    "Post-2022 equals 1 from July 2022 onward and 0 otherwise.",
+    "Interaction terms test whether ECB pass-through to money-market rates changed during the post-2022 tightening cycle."
+  ),
+
+  output = "flextable"
+)
+
+# Format table
+table10 <- table10 |>
+  autofit() |>
+  theme_booktabs() |>
+  align(align = "center", part = "all") |>
+  align(j = 1, align = "left", part = "body") |>
+  bold(part = "header") |>
+  fontsize(size = 8, part = "all") |>
+  padding(padding = 2, part = "all")
+
+# Display table
+table10
+
+# GITHUB CLEANUP [PATH ONLY]: Use a relative output directory for the EURIBOR table.
+# Save to Word
+save_as_docx(
+  "Table 10. ECB Policy Rate Pass-Through to EURIBOR" = table10,
+  path = file.path("outputs", "Table10_EURIBOR_Pass_Through.docx")
+)
+```
