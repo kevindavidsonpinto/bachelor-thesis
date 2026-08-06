@@ -1,3 +1,10 @@
 # Documentation
 
-This folder contains additional documentation about the project and the data.
+This folder contains supporting documentation for the replication package.
+
+Contents:
+
+- Methodological notes
+- Data descriptions
+- Repository structure
+- Reproducibility information
