@@ -472,22 +472,25 @@ model_baseline <- lm(
   data = thesis_model
 )
 
-# GITHUB CLEANUP [OPTIONAL]: Console model output may be retained for transparency or suppressed in the rendered notebook.
-# Do not alter the model object or Newey-West covariance settings.
-# Display regression results with Newey-West standard errors
-# Newey-West corrects for heteroskedasticity and autocorrelation, not multicollinearity
+# Display the baseline regression with Newey-West standard errors.
+# The covariance matrix is also used in the formatted thesis table.
+# Newey-West covariance matrix with 12 lags
+nw_baseline <- NeweyWest(
+  model_baseline,
+  lag = 12,
+  prewhite = FALSE
+)
+
+# Display regression results
 coeftest(
   model_baseline,
-  vcov. = NeweyWest(model_baseline, lag = 12, prewhite = FALSE)
+  vcov. = nw_baseline
 )
 
 # Create formatted regression table
 table_baseline <- modelsummary(
   model_baseline,
-  
-  # Newey-West standard errors with 12 lags
-  vcov = NeweyWest(model_baseline, lag = 12, prewhite = FALSE),
-  
+  vcov = nw_baseline,
   coef_rename = c(
     "(Intercept)" = "Constant",
     "d_ECBRate" = "Change in ECB Policy Rate",
@@ -504,13 +507,11 @@ table_baseline <- modelsummary(
     "d_ECBRate_lag11" = "Change in ECB Policy Rate, t-11",
     "d_ECBRate_lag12" = "Change in ECB Policy Rate, t-12"
   ),
-  
   gof_map = data.frame(
     raw = c("nobs", "r.squared", "adj.r.squared"),
     clean = c("Observations", "R-squared", "Adjusted R-squared"),
     fmt = c(0, 3, 3)
   ),
-  
   stars = TRUE,
   fmt = 3,
   title = "Table 1. Baseline Pass-Through Regression Results",
@@ -536,12 +537,15 @@ table_baseline
 
 save_as_docx(
   "Table 1. Baseline Pass-Through Regression Results" = table_baseline,
-  path = file.path("outputs", "table1_baseline_pass_through.docx")
+  path = file.path(
+    table_dir,
+    "table1_baseline_pass_through.docx"
+  )
 )
 ```
 
 ```{r}
-# Model 2: BASELINE MODEL PASS-THROUGH >> CONTROLING FOR INFLATION
+# Model 2: Baseline pass-through model controlling for inflation
 # Create 12 lags of monthly HICP changes
 thesis_model <- thesis_model |>
   dplyr::arrange(month) |>
@@ -672,12 +676,13 @@ table2 <- table2 |>
 # Display table
 table2
 
-# GITHUB CLEANUP [PATH ONLY]: Keep the export code, but use a relative output path.
-# Generated `.docx` tables are usually added to `.gitignore` unless they are intended repository deliverables.
-# Save to Word
+# Save the full inflation-controlled regression table
 save_as_docx(
   "Table 2. Pass-Through Regression with Distributed Inflation Controls" = table2,
-  path = file.path("outputs", "Table2_Pass-through_controling_for_HICP_12lags.docx")
+  path = file.path(
+    table_dir,
+    "table2_pass_through_controlling_for_inflation_full.docx"
+  )
 )
 ```
 
